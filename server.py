@@ -123,5 +123,8 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     handler = partial(Handler, directory=Path(__file__).resolve().parent / "dist")
-    print("http://127.0.0.1:8765")
-    ThreadingHTTPServer(("127.0.0.1", 8765), handler).serve_forever()
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8765"))
+    server = ThreadingHTTPServer((host, port), handler)
+    print(f"http://{host}:{port}")
+    server.serve_forever()

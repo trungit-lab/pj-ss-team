@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "Fuel Finder",
+    "slug": "fuel-finder-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Fuel Finder to use your location to find nearby fuel stations."
+        }
+      ]
+    ],
+    "android": {
+      "package": "dev.pjss.fuelfinder"
+    }
+  }
+}
