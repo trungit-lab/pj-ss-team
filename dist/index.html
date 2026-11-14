@@ -34,9 +34,9 @@ const demoMode=new URLSearchParams(location.search).get('demo')==='1';
 async function findStations(origin){
   if(demoMode){
     const fixtures=[
-      {name:'Cây A · Đường lớn',address:'Đường lớn, Cầu Giấy (địa chỉ mẫu)',lat:21.035,lon:105.79,travelMinutes:4,distanceMeters:1100,speedKmh:16.5,delayMinutes:2,demoQueue:24,peak:true,serviceSlots:4,demoDensity:240},
-      {name:'Cây B · Khu dân cư',address:'Đường nhánh, Cầu Giấy (địa chỉ mẫu)',lat:21.03,lon:105.80,travelMinutes:7,distanceMeters:2200,speedKmh:18.9,delayMinutes:1,demoQueue:6,peak:true,serviceSlots:4,demoDensity:90},
-      {name:'Cây C · Gần nút giao',address:'Gần nút giao, Cầu Giấy (địa chỉ mẫu)',lat:21.04,lon:105.81,travelMinutes:9,distanceMeters:2600,speedKmh:17.3,delayMinutes:3,demoQueue:15,peak:true,serviceSlots:4,demoDensity:150},
+      {name:'Cây A · Đường lớn',address:'Đường lớn, Cầu Giấy (địa chỉ mẫu)',lat:21.035,lon:105.79,travelMinutes:4,distanceMeters:1100,speedKmh:16.5,delayMinutes:2,demoQueue:24,peak:true,serviceSlots:4,demoDensity:240,trafficDensityIndexPercent:60,trafficSampleCount:8,trafficQueueScaleVehicles:40,trafficEstimateConfidence:'demo'},
+      {name:'Cây B · Khu dân cư',address:'Đường nhánh, Cầu Giấy (địa chỉ mẫu)',lat:21.03,lon:105.80,travelMinutes:7,distanceMeters:2200,speedKmh:18.9,delayMinutes:1,demoQueue:6,peak:true,serviceSlots:4,demoDensity:90,trafficDensityIndexPercent:20,trafficSampleCount:8,trafficQueueScaleVehicles:40,trafficEstimateConfidence:'demo'},
+      {name:'Cây C · Gần nút giao',address:'Gần nút giao, Cầu Giấy (địa chỉ mẫu)',lat:21.04,lon:105.81,travelMinutes:9,distanceMeters:2600,speedKmh:17.3,delayMinutes:3,demoQueue:15,peak:true,serviceSlots:4,demoDensity:150,trafficDensityIndexPercent:40,trafficSampleCount:8,trafficQueueScaleVehicles:40,trafficEstimateConfidence:'demo'},
     ];
     return {stations:fixtures,summary:'Kịch bản giờ cao điểm. Mật độ đường và số xe chờ là hai giả định riêng.'};
   }
@@ -145,7 +145,7 @@ async function loadStations(query, selectedOrigin){
     statusText.textContent='Đang tìm cây xăng quanh bạn…';
     const {stations,summary}=await findStations(origin);
     if(!stations.length) throw Error('Chưa tìm thấy cây xăng cách điểm xuất phát dưới 3 km.');
-    chatOptions=stations.map(({name,address,travelMinutes,arrivalAt,peak,serviceSlots,queueSource,distanceMeters,speedKmh,delayMinutes})=>({name,address,arrivalAt,peak,serviceSlots,queueSource,distanceMeters,speedKmh,delayMinutes,travelMinutes:Number(travelMinutes.toFixed(1)),waitMinutes:null,totalMinutes:null,crowd:null}));
+    chatOptions=stations.map(({name,address,travelMinutes,arrivalAt,peak,serviceSlots,queueSource,distanceMeters,speedKmh,delayMinutes,trafficDensityIndexPercent,trafficJamFactor,trafficRoads,trafficSourceUpdated,trafficSampleCount,trafficQueueScaleVehicles,trafficEstimateConfidence})=>({name,address,arrivalAt,peak,serviceSlots,queueSource,distanceMeters,speedKmh,delayMinutes,trafficDensityIndexPercent,trafficJamFactor,trafficRoads,trafficSourceUpdated,trafficSampleCount,trafficQueueScaleVehicles,trafficEstimateConfidence,travelMinutes:Number(travelMinutes.toFixed(1)),waitMinutes:null,totalMinutes:null,crowd:null}));
     function compareTotals(){
       const cards=[...choices.querySelectorAll('.comparison')];
       const totals=cards.map(card=>Number(card.dataset.total));
@@ -164,6 +164,7 @@ async function loadStations(query, selectedOrigin){
       if(station.speedKmh!=null) details.push(station.speedKmh+' km/h');
       if(station.delayMinutes!=null) details.push('Chậm thêm '+station.delayMinutes+' phút');
       if(station.serviceSlots) details.push((station.peak?'Cao điểm':'Giờ thường')+' · '+station.serviceSlots+' xe cùng lúc');
+      if(station.trafficDensityIndexPercent!=null) details.push('Chỉ số giao thông lân cận '+station.trafficDensityIndexPercent+'%');
       metrics.textContent=details.join(' · ');
       const field=document.createElement('label');
       field.textContent='Số xe chờ giả định';
@@ -194,7 +195,9 @@ async function loadStations(query, selectedOrigin){
         const minutes=value=>value.toLocaleString('vi-VN',{maximumFractionDigits:1});
         const crowd=count<10?'Vắng':count<=20?'Vừa':'Đông';
         Object.assign(chatOptions[index],{crowd,queueCount:count,waitMinutes:Number(wait.toFixed(1)),totalMinutes:Number((station.travelMinutes+wait+1).toFixed(1))});
-        estimate.textContent=crowd+(demoMode?' (dữ liệu mẫu)':' (dự toán)')+' · '+count+' xe · Chờ khoảng '+minutes(wait)+' phút · Đổ xong sau khoảng '+minutes(station.travelMinutes+wait+1)+' phút';
+        const queueLabel=demoMode?'Số xe mẫu: ':'Hàng chờ ước tính: ~';
+        const modelLabel=demoMode?' (mô phỏng)':' (từ giao thông đường tiếp cận; độ tin cậy thấp)';
+        estimate.textContent=crowd+modelLabel+' · '+queueLabel+count+' xe · Chờ khoảng '+minutes(wait)+' phút · Đổ xong sau khoảng '+minutes(station.travelMinutes+wait+1)+' phút';
       }
       queue.oninput=update;
       update();
@@ -218,35 +221,28 @@ async function loadStations(query, selectedOrigin){
       }
       const traffic=document.createElement('details');
       const heading=document.createElement('summary');
-      heading.textContent='Mô phỏng mật độ và lưu lượng';
+      heading.textContent='Cách ước tính giao thông lân cận';
       const note=document.createElement('small');
-      note.textContent='Dùng tốc độ trung bình toàn tuyến làm giả định cho đoạn khảo sát. Nhập mật độ cùng chiều và cùng nhóm xe.';
-      const densityLabel=document.createElement('label');
-      densityLabel.textContent='Mật độ giả định (xe/km)';
-      const density=document.createElement('input');
-      density.type='number';
-      density.min='0';
-      density.step='any';
-      densityLabel.append(density);
+        note.textContent=station.trafficDensityIndexPercent==null
+        ?'HERE chưa trả đủ 4 đoạn đường có dữ liệu quanh cây xăng. Chưa ước lượng hàng chờ.'
+        :'HERE jamFactor trung bình '+(station.trafficJamFactor??'—')+'/10 trên '+station.trafficSampleCount+' đoạn đường. Đây là mức ùn tắc đường, không phải số xe ở cây xăng. Hàng chờ quy đổi theo heuristic: tối đa '+(station.trafficQueueScaleVehicles??40)+' xe.';
       const flow=document.createElement('p');
       flow.setAttribute('aria-live','polite');
-      density.oninput=()=>{
-        const k=density.valueAsNumber;
-        const speed=station.speedKmh;
-        if(!Number.isFinite(k)||k<0||!Number.isFinite(speed)){
-          flow.textContent='Cần mật độ và tốc độ để tính.';
-          return;
-        }
-        const rate=k*speed;
-        const format=value=>Math.round(value).toLocaleString('vi-VN');
-        flow.textContent='q = k × v ≈ '+format(rate)+' xe/giờ · '+format(rate*20/60)+' lượt trong 20 phút nếu dòng xe ổn định.';
-      };
+      flow.textContent=station.trafficDensityIndexPercent==null
+        ?'Nguồn: HERE Traffic API · chưa đủ dữ liệu đoạn đường.'
+        :'Nguồn: HERE Traffic API · cập nhật '+(station.trafficSourceUpdated||'thời điểm không có')+' · Độ tin cậy hàng chờ: thấp';
+      if(!demoMode&&Array.isArray(station.trafficRoads)&&station.trafficRoads.length){
+        const roads=document.createElement('p');
+        roads.textContent='Đường: '+station.trafficRoads.map(r=>(r.roadName||'Đoạn đường')+' (jam '+r.jamFactor+'/10)').join(' · ');
+        traffic.append(heading,note,flow,roads);
+      }else{
+        traffic.append(heading,note,flow);
+      }
       if(demoMode){
         traffic.open=true;
-        density.value=station.demoDensity;
-        density.oninput();
+        note.textContent='Dữ liệu mẫu để xem giao diện; không phải quan sát giao thông thật.';
+        flow.textContent='Chỉ số giao thông lân cận dùng trong demo: '+(station.trafficDensityIndexPercent??'chưa có')+'% · Hàng chờ là dữ liệu mẫu.';
       }
-      traffic.append(heading,note,densityLabel,flow);
       card.append(traffic);
       return card;
     }));
@@ -323,3 +319,4 @@ manual.onsubmit=event=>{
 };
 loadStations();
 </script></html>
+

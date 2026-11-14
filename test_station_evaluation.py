@@ -1,13 +1,15 @@
 import json
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from threading import Thread
 from unittest.mock import patch
 
 import server
-from station_evaluation import duration_seconds, evaluate_station, find_stations, project_queue, service_at
+from station_evaluation import (duration_seconds, evaluate_station, find_stations,
+                                fetch_adjacent_traffic,
+                                local_traffic_estimate, service_at)
 
 
 ORIGIN = {"latitude": 21.03, "longitude": 105.8}
@@ -34,13 +36,42 @@ class StationEvaluationTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(duration_seconds(value))
 
-    def test_project_queue_grows_by_arrivals_minus_capacity(self):
-        self.assertEqual(project_queue(4, 3, NOW, NOW + timedelta(minutes=1)), 5)
+    def test_here_jam_factor_becomes_average_relative_congestion(self):
+        data = {"sourceUpdated": "2026-11-14T08:00:00Z", "results": [
+            {"roadName": f"Road {i}", "jamFactor": 5, "speed": 4, "freeFlow": 8}
+            for i in range(4)]}
+        estimate = local_traffic_estimate(data)
+        self.assertEqual(estimate["densityIndexPercent"], 50.0)
+        self.assertEqual(estimate["jamFactor"], 5.0)
+        self.assertEqual(estimate["estimatedQueueCount"], 20)
+        self.assertEqual(estimate["sampleCount"], 4)
+        self.assertEqual(estimate["confidence"], "low")
 
-    def test_project_queue_rounds_once_after_forecast(self):
-        start = datetime.fromisoformat("2026-11-14T15:59:30+07:00")
-        end = start + timedelta(minutes=1)
-        self.assertEqual(project_queue(5, 3, start, end), 5)
+    def test_here_traffic_request_uses_station_circle_and_shape_reference(self):
+        station = evaluate_station(place("station-a"), {"duration": "60s"}, NOW)
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.read.return_value = json.dumps({"results": []}).encode()
+        with patch("station_evaluation.urlopen", return_value=response) as open_url:
+            self.assertEqual(fetch_adjacent_traffic(station, "fixture"), {"results": [], "sourceUpdated": None})
+        request = open_url.call_args.args[0]
+        self.assertIn("data.traffic.hereapi.com/v7/flow", request.full_url)
+        self.assertIn("locationReferencing=shape", request.full_url)
+
+    def test_uncongested_adjacent_roads_produce_zero_proxy_queue(self):
+        data = {"results": [{"jamFactor": 0, "roadName": f"Road {i}"} for i in range(4)]}
+        estimate = local_traffic_estimate(data)
+        self.assertEqual(estimate["densityIndexPercent"], 0)
+        self.assertEqual(estimate["jamFactor"], 0)
+        self.assertEqual(estimate["estimatedQueueCount"], 0)
+
+    def test_insufficient_here_segments_keep_queue_unknown(self):
+        estimate = local_traffic_estimate({"results": [{"jamFactor": 8}] * 3})
+        self.assertIsNone(estimate["densityIndexPercent"])
+        self.assertIsNone(estimate["estimatedQueueCount"])
+        self.assertEqual(estimate["sampleCount"], 3)
 
     def test_rank_stations_uses_total_when_every_total_is_known(self):
         fast_drive = {"id": "A", "travelMinutes": 4, "totalMinutes": 11}
@@ -90,24 +121,6 @@ class StationEvaluationTests(unittest.TestCase):
                 when = datetime.fromisoformat(f"2026-11-14T{hour}:00+07:00")
                 self.assertEqual(service_at(when), (expected == 4, expected))
 
-    def test_queue_empty_before_capacity_drops(self):
-        start = datetime.fromisoformat("2026-11-14T18:58:00+07:00")
-        self.assertEqual(project_queue(1, 3, start, start + timedelta(minutes=4)), 2)
-
-    def test_queue_crosses_midnight_without_negative_count(self):
-        start = datetime.fromisoformat("2026-11-14T23:59:00+07:00")
-        self.assertEqual(project_queue(1, 0, start, start + timedelta(minutes=3)), 0)
-
-    def test_observation_exact_expiry_and_invalid_rates(self):
-        observation = {"observedAt": (NOW - timedelta(minutes=15)).isoformat(),
-                       "queueCount": 4, "arrivalsPerMinute": 2}
-        route = {"duration": "60s"}
-        self.assertEqual(evaluate_station(place("A"), route, NOW, observation)["queueCount"], 4)
-        for rate in (-1, float("nan"), float("inf"), True, None):
-            with self.subTest(rate=rate):
-                bad = dict(observation, arrivalsPerMinute=rate)
-                self.assertIsNone(evaluate_station(place("A"), route, NOW, bad)["queueCount"])
-
     def test_candidates_keep_missing_routes_and_exclude_closed_stations(self):
         places = [place(str(index)) for index in range(5)]
         places.insert(1, place("closed", businessStatus="CLOSED_TEMPORARILY"))
@@ -132,30 +145,20 @@ class StationEvaluationTests(unittest.TestCase):
             self.assertEqual(find_stations(ORIGIN, "fixture"), [])
         post.assert_called_once()
 
-    def test_queue_crosses_peak_boundary(self):
-        observation = {"observedAt": NOW.isoformat(), "queueCount": 14, "arrivalsPerMinute": 3}
-        result = evaluate_station(place("A"), {"duration": "240s"}, NOW, observation)
-        self.assertTrue(result["peak"])
-        self.assertEqual(result["queueCount"], 14)
-        self.assertEqual(result["waitMinutes"], 3.5)
-        self.assertEqual(result["totalMinutes"], 8.5)
+    def test_station_wait_and_total_derive_from_adjacent_traffic_proxy(self):
+        traffic = {"results": [{"jamFactor": 5, "roadName": f"Road {i}"} for i in range(4)]}
+        result = evaluate_station(place("A"), {"duration": "120s"}, NOW, traffic)
+        self.assertEqual(result["trafficDensityIndexPercent"], 50.0)
+        self.assertEqual(result["queueCount"], 20)
+        self.assertEqual(result["serviceSlots"], 4)
+        self.assertEqual(result["waitMinutes"], 5)
+        self.assertEqual(result["totalMinutes"], 8)
+        self.assertEqual(result["trafficEstimateConfidence"], "low")
 
-    def test_crowd_thresholds_and_zero(self):
-        for count, label in [(0, "Vắng"), (9, "Vắng"), (10, "Vừa"), (20, "Vừa"), (21, "Đông")]:
-            with self.subTest(count=count):
-                observation = {"observedAt": NOW.isoformat(), "queueCount": count, "arrivalsPerMinute": 2}
-                result = evaluate_station(place("A"), {"duration": "60s"}, NOW, observation)
-                self.assertEqual(result["crowd"], label)
-                self.assertEqual(result["waitMinutes"], count / 2)
-
-    def test_missing_stale_or_invalid_observation_stays_unknown(self):
-        for timestamp in (None, (NOW - timedelta(minutes=16)).isoformat(),
-                          (NOW + timedelta(minutes=1)).isoformat(), "invalid"):
-            with self.subTest(timestamp=timestamp):
-                observation = {"observedAt": timestamp, "queueCount": 0, "arrivalsPerMinute": 2}
-                result = evaluate_station(place("A"), {"duration": "60s"}, NOW, observation)
-                for field in ("queueCount", "waitMinutes", "totalMinutes", "crowd"):
-                    self.assertIsNone(result[field])
+    def test_no_adjacent_traffic_samples_keeps_wait_unknown(self):
+        result = evaluate_station(place("A"), {"duration": "60s"}, NOW, {})
+        for field in ("queueCount", "waitMinutes", "totalMinutes", "crowd"):
+            self.assertIsNone(result[field])
 
 
 class StationsApiTests(unittest.TestCase):
@@ -181,10 +184,29 @@ class StationsApiTests(unittest.TestCase):
         candidates.append(evaluate_station(place("unknown"), None, NOW))
         with patch.dict("os.environ", {"GOOGLE_MAPS_API_KEY": "fixture", "FUEL_AGENT_URL": ""}):
             with patch.object(server, "find_stations", return_value=candidates):
-                status, payload = self.request({"lat": 21, "lon": 105})
+                with patch.object(server, "fetch_adjacent_traffic", return_value=[]):
+                    status, payload = self.request({"lat": 21, "lon": 105})
         self.assertEqual(status, 200)
         self.assertEqual(payload["candidates"], candidates)
         self.assertEqual([station["id"] for station in payload["stations"]], ["0", "1", "2"])
+
+    def test_api_ranks_by_local_traffic_wait_when_estimates_are_available(self):
+        candidates = [evaluate_station(place(str(index)), {"duration": f"{index + 1}s"}, NOW)
+                      for index in range(3)]
+
+        def approach_routes(station, _key):
+            jam = {"0": 8, "1": 1, "2": 2}[station["id"]]
+            return {"results": [{"jamFactor": jam, "roadName": f"Road {i}"} for i in range(4)]}
+
+        with patch.dict("os.environ", {"GOOGLE_MAPS_API_KEY": "fixture", "HERE_TRAFFIC_API_KEY": "fixture", "FUEL_AGENT_URL": ""}):
+            with patch.object(server, "find_stations", return_value=candidates):
+                with patch.object(server, "fetch_adjacent_traffic", side_effect=approach_routes):
+                    status, payload = self.request({"lat": 21, "lon": 105})
+        self.assertEqual(status, 200)
+        self.assertEqual([s["id"] for s in payload["stations"]], ["1", "2", "0"])
+        self.assertEqual(payload["stations"][0]["trafficDensityIndexPercent"], 10.0)
+        self.assertEqual(payload["stations"][2]["trafficDensityIndexPercent"], 80.0)
+        self.assertEqual(payload["stations"][2]["trafficEstimateConfidence"], "low")
 
     def test_api_rejects_invalid_coordinates(self):
         with patch.dict("os.environ", {"GOOGLE_MAPS_API_KEY": "fixture"}):
@@ -205,3 +227,6 @@ class StationsApiTests(unittest.TestCase):
                 status, payload = self.request({"lat": 21, "lon": 105})
         self.assertEqual(status, 502)
         self.assertNotIn("fixture-secret", payload["error"])
+
+
+

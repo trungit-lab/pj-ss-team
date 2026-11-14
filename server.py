@@ -4,7 +4,7 @@ import os
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from station_evaluation import find_stations, post
+from station_evaluation import fetch_adjacent_traffic, find_stations, local_traffic_estimate, post
 
 
 def rank_stations(stations):
@@ -21,14 +21,19 @@ def summarize(stations):
     context = [{
         "option": index,
         **{field: station[field] for field in
-           ("travelMinutes", "speedKmh", "delayMinutes", "queueCount", "crowd", "waitMinutes", "totalMinutes")},
+           ("travelMinutes", "speedKmh", "delayMinutes", "trafficDensityIndexPercent", "trafficJamFactor",
+            "trafficSampleCount", "trafficQueueScaleVehicles", "trafficEstimateConfidence",
+            "trafficRoads", "trafficSourceUpdated", "queueCount", "crowd",
+            "waitMinutes", "totalMinutes")},
     } for index, station in enumerate(stations, 1)]
     try:
         result = post(endpoint, {
             "instruction": (
                 "Tóm tắt tối đa một câu tiếng Việt về các lựa chọn đã xếp hạng. "
                 "Giữ nguyên số liệu. null là chưa biết. Ùn tắc đường không cho biết "
-                "hàng chờ cây xăng. Không dự đoán số xe hoặc phút chờ khi thiếu dữ liệu."
+                "chính xác hàng chờ cây xăng. trafficJamFactor là mức ùn tắc HERE từ 0 đến 10, "
+                "không phải số xe. queueCount là quy đổi heuristic độ tin cậy thấp từ tối đa 6 đoạn đường. "
+                "Nêu rõ đây là ước tính, không phải số xe quan sát."
             ),
             "assumptions": {"serviceMinutesPerVehicle": 1, "normalSlots": 2, "peakSlots": 4},
             "options": context,
@@ -68,8 +73,40 @@ class Handler(SimpleHTTPRequestHandler):
         except (OSError, ValueError, KeyError, TypeError):
             self.reply(502, {"error": "Chưa lấy được dữ liệu Google Maps. Kiểm tra Places API, Routes API và khóa."})
             return
-        display = rank_stations([station for station in stations if station["travelMinutes"] is not None])[:3]
-        self.reply(200, {"stations": display, "candidates": stations, "summary": summarize(display)})
+        display = [dict(station) for station in
+                   rank_stations([station for station in stations if station["travelMinutes"] is not None])[:3]]
+        here_key = os.getenv("HERE_TRAFFIC_API_KEY")
+        for station in display:
+            if here_key:
+                try:
+                    estimate = local_traffic_estimate(fetch_adjacent_traffic(station, here_key))
+                except (OSError, ValueError, KeyError, TypeError):
+                    estimate = local_traffic_estimate({})
+            else:
+                estimate = local_traffic_estimate({})
+            station["trafficDensityIndexPercent"] = estimate["densityIndexPercent"]
+            station["trafficJamFactor"] = estimate["jamFactor"]
+            station["trafficSampleCount"] = estimate["sampleCount"]
+            station["trafficQueueScaleVehicles"] = estimate["queueScaleVehicles"]
+            station["trafficEstimateConfidence"] = estimate["confidence"]
+            station["trafficRoads"] = estimate["roads"]
+            station["trafficSourceUpdated"] = estimate["sourceUpdated"]
+            station["queueCount"] = estimate["estimatedQueueCount"]
+            station["queueSource"] = estimate["source"]
+            if station["queueCount"] is not None and station["serviceSlots"]:
+                wait = station["queueCount"] / station["serviceSlots"]
+                station["waitMinutes"] = round(wait, 1)
+                station["totalMinutes"] = round(station["travelMinutes"] + wait + station["serviceMinutes"], 1)
+                count = station["queueCount"]
+                station["crowd"] = "Vắng" if count < 10 else "Vừa" if count <= 20 else "Đông"
+            else:
+                station["waitMinutes"] = None
+                station["totalMinutes"] = None
+                station["crowd"] = None
+        display = rank_stations(display)
+        self.reply(200, {"stations": display, "candidates": stations, "summary": summarize(display),
+                         "trafficProvider": "HERE" if here_key else None,
+                         "trafficConfigRequired": not bool(here_key)})
 
     def chat(self):
         endpoint = os.getenv("FUEL_AGENT_URL")
