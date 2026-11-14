@@ -17,4 +17,6 @@ The API key stays on the backend. The app uses device location only after the us
 
 Sample stations appear until a live search succeeds. If the backend is not configured or reachable, the app explains the issue and keeps the sample list available. Estimates do not guarantee that the rider can reach a station; stop safely before interacting.
 
+The assistant supports typed questions and Vietnamese speech recognition (`vi-VN`) on devices with a compatible system recognition service. The app requests microphone/speech permissions only when voice input is tapped. Spoken assistant replies use the device's Vietnamese text-to-speech voice when available; use the speaker toggle to disable replies or “Nghe lại” to repeat one. Voice recognition may require an internet connection or downloaded language support. An Expo Go client does not include custom native modules: build/run a development client (`npx expo run:android`) after configuring the speech recognition plugin. The app posts questions to `/api/chat` when the assistant is configured; otherwise, it answers simple questions locally from the current station list and explicitly treats queue information as unknown.
+
 Run the ranking unit tests with `npm test`; export a web preview with `npx expo export --platform web`.

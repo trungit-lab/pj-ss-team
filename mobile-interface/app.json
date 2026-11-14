@@ -11,6 +11,13 @@
         {
           "locationWhenInUsePermission": "Allow Fuel Finder to use your location to find nearby fuel stations."
         }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow Fuel Finder to listen to your question.",
+          "speechRecognitionPermission": "Allow Fuel Finder to convert speech to text."
+        }
       ]
     ],
     "android": {
