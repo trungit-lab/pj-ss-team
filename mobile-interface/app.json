@@ -21,7 +21,8 @@
       ]
     ],
     "android": {
-      "package": "dev.pjss.fuelfinder"
+      "package": "dev.pjss.fuelfinder",
+      "usesCleartextTraffic": true
     }
   }
 }
